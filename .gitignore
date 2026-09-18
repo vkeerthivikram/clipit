@@ -1,0 +1,6 @@
+/target
+*.png.tmp
+.direnv/
+result
+.DS_Store
+*.swp

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Clipit
+Comment=Clipboard history manager
+Type=Application
+Icon=edit-paste-symbolic
+Exec=clipit
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC;Clipboard;
+NoDisplay=true
+X-CosmicApplet=true
+X-CosmicHoverPopup=Auto

@@ -1,0 +1,28 @@
+[package]
+name = "clipit"
+version = "0.1.0"
+edition = "2024"
+description = "Clipboard history applet for the COSMIC desktop"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+wl-clipboard-rs = "0.9.3"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "tokio"] }
+
+[dependencies.cosmic-settings-config]
+git = "https://github.com/pop-os/cosmic-settings-daemon"
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+default-features = false
+features = [
+    "applet",
+    "applet-token",
+    "dbus-config",
+    "multi-window",
+    "tokio",
+    "wayland",
+    "winit",
+]
