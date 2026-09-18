@@ -3,6 +3,8 @@
 Clipboard history applet for the COSMIC desktop. Lives in the panel, records
 everything you copy, and lets you search, pin, preview, and re-paste it.
 
+Licensed under [MIT](LICENSE).
+
 ## Features
 
 ### Capture
