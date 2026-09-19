@@ -15,6 +15,7 @@ use crate::clipboard::{self, Clip};
 use crate::history::{
     ensure_private_dir, rel_time, write_private, Entry, History, Kind,
 };
+use crate::fl;
 
 pub const APP_ID: &str = "dev.clipit.Clipit";
 
@@ -29,12 +30,13 @@ const EXPANDED_IMAGE_HEIGHT: f32 = 240.0;
 const THUMBNAIL_HEIGHT: f32 = 56.0;
 
 #[derive(Clone, Debug, CosmicConfigEntry, Eq, PartialEq)]
-#[version = 2]
+#[version = 3]
 pub struct Config {
     pub history_size: usize,
     pub poll_ms: u64,
     pub expire_days: u64,
     pub capture_images: bool,
+    pub capture_primary: bool,
     pub ignore_patterns: Vec<String>,
 }
 
@@ -45,6 +47,7 @@ impl Default for Config {
             poll_ms: 800,
             expire_days: 0,
             capture_images: true,
+            capture_primary: false,
             ignore_patterns: Vec::new(),
         }
     }
@@ -58,7 +61,7 @@ pub enum Message {
     Config(Config),
     ClipboardContent(Clip),
     Copy(String),
-    Copied,
+    Copied(Option<u64>),
     Delete(String),
     UndoDelete,
     TogglePin(String),
@@ -73,6 +76,8 @@ pub enum Message {
     PollRate(i32),
     ExpireDays(i32),
     ToggleImages(bool),
+    TogglePrimary(bool),
+    ToggleHtmlView,
     IgnoreInput(String),
     IgnoreAdd,
     IgnoreRemove(String),
@@ -87,10 +92,13 @@ pub struct App {
     search: String,
     search_id: TextInputId,
     /// Hash of content we just placed on the clipboard, so the watcher
-    /// does not re-record our own copy. Consumed on first match.
+    /// does not re-record our own copy. Stays set until fresh external
+    /// content arrives, so both clipboard targets are suppressed.
     last_set: Option<u64>,
     /// Entry id currently expanded to full view.
     expanded: Option<String>,
+    /// Whether the expanded entry shows its HTML source instead of text.
+    expanded_html: bool,
     /// Index into the visible list highlighted via keyboard navigation.
     selected: Option<usize>,
     /// Recently deleted entries for undo, newest delete first.
@@ -111,6 +119,15 @@ fn preview_text(entry: &Entry) -> String {
             }
             preview
         }
+    }
+}
+
+fn localized_time(entry: &Entry) -> String {
+    let time = rel_time(entry.ts);
+    if time == "now" {
+        fl!("time-now")
+    } else {
+        time
     }
 }
 
@@ -155,9 +172,9 @@ impl App {
         let mut list = widget::column::with_capacity(visible.len().min(MAX_RENDER));
         if visible.is_empty() {
             let message = if self.search.trim().is_empty() {
-                "No clipboard history yet"
+                fl!("no-history")
             } else {
-                "No matches"
+                fl!("no-matches")
             };
             list = list.push(
                 widget::container(widget::text::body(message))
@@ -175,11 +192,12 @@ impl App {
             }
         }
 
-        let stats = format!(
-            "{} items · {} pinned",
-            self.history.total(),
-            self.history.pinned_count()
-        );
+        let stats = fl!(
+            "stats",
+            items = self.history.total(),
+            pinned = self.history.pinned_count(),
+        )
+        ;
 
         let mut footer = widget::row::with_capacity(5)
             .push(widget::text::caption(stats))
@@ -204,14 +222,14 @@ impl App {
                 .class(theme::Button::Text),
             )
             .push(
-                widget::button::text("Clear")
+                widget::button::text(fl!("clear"))
                     .on_press(Message::ClearHistory)
                     .class(theme::Button::Text),
             );
 
         let content = widget::column::with_capacity(4)
             .push(
-                widget::text_input("Search clipboard", &self.search)
+                widget::text_input(fl!("search-placeholder"), &self.search)
                     .id(self.search_id.clone())
                     .on_input(Message::Search)
                     .width(Length::Fill),
@@ -233,7 +251,7 @@ impl App {
     }
 
     fn preview_row(&self, entry: &Entry, selected: bool) -> Element<'_, Message> {
-        let time = rel_time(entry.ts);
+        let time = localized_time(entry);
         let content = match entry.kind {
             Kind::Image => Element::from(
                 widget::image(
@@ -308,16 +326,37 @@ impl App {
                 }
             }
             Kind::Text => {
-                body = body.push(
+                if self.expanded_html
+                    && let Some(html) = &entry.html
+                {
+                    body = body.push(
+                        widget::scrollable(widget::text::body(html.clone()))
+                            .height(Length::Fixed(EXPANDED_TEXT_HEIGHT)),
+                    );
+                } else {
+                    body = body.push(
                         widget::scrollable(widget::text::body(entry.text.clone()))
                             .height(Length::Fixed(EXPANDED_TEXT_HEIGHT)),
-                );
+                    );
+                }
+                if entry.html.is_some() {
+                    let label = if self.expanded_html {
+                        fl!("show-text")
+                    } else {
+                        fl!("show-html")
+                    };
+                    body = body.push(
+                        widget::button::text(label)
+                            .on_press(Message::ToggleHtmlView)
+                            .class(theme::Button::Text),
+                    );
+                }
             }
         }
-        let time = rel_time(entry.ts);
+        let time = localized_time(entry);
         let mut actions = widget::row::with_capacity(4).spacing(4);
         actions = actions.push(
-            widget::button::text("Copy")
+            widget::button::text(fl!("copy"))
                 .on_press(Message::Copy(entry.id.clone()))
                 .class(theme::Button::Suggested),
         );
@@ -352,11 +391,10 @@ impl App {
     }
 
     fn settings_view(&self) -> Element<'_, Message> {
-        let poll_label = format!("{} ms", self.config.poll_ms);
+        let poll_label = fl!("poll-label", ms = self.config.poll_ms);
         let expire_label = match self.config.expire_days {
-            0 => "never".to_string(),
-            1 => "1 day".to_string(),
-            n => format!("{n} days"),
+            0 => fl!("expire-never"),
+            n => fl!("expire-days", days = n),
         };
 
         let mut patterns = widget::column::with_capacity(self.config.ignore_patterns.len() + 2);
@@ -379,7 +417,7 @@ impl App {
         patterns = patterns.push(
             widget::row::with_capacity(2)
                 .push(
-                    widget::text_input("Ignore text containing…", &self.ignore_input)
+                    widget::text_input(fl!("ignore-placeholder"), &self.ignore_input)
                         .on_input(Message::IgnoreInput)
                         .on_submit(|_| Message::IgnoreAdd)
                         .width(Length::Fill),
@@ -391,7 +429,7 @@ impl App {
                 .align_y(Alignment::Center),
         );
         patterns = patterns.push(
-            widget::text::caption("Entries containing these words are never recorded.")
+            widget::text::caption(fl!("ignore-hint"))
                 .width(Length::Fill),
         );
 
@@ -400,7 +438,7 @@ impl App {
             widget::button::custom(
                 widget::row::with_capacity(2)
                     .push(icon::from_name("document-save-symbolic").size(14).symbolic(true))
-                    .push(widget::text::body("Export history"))
+                    .push(widget::text::body(fl!("export-history")))
                     .spacing(8),
             )
             .on_press(Message::Export)
@@ -409,11 +447,12 @@ impl App {
         if let Some(msg) = &self.export_msg {
             data = data.push(widget::text::caption(msg.clone()));
         }
-        data = data.push(widget::text::caption(format!(
-            "{} items · {} pinned",
-            self.history.total(),
-            self.history.pinned_count()
-        )));
+        data = data.push(widget::text::caption(fl!(
+            "stats",
+            items = self.history.total(),
+            pinned = self.history.pinned_count(),
+        )
+        ));
 
         widget::column::with_capacity(6)
             .push(
@@ -427,7 +466,7 @@ impl App {
                         .on_press(Message::ShowSettings(false))
                         .class(theme::Button::Text),
                     )
-                    .push(widget::text::body("Settings"))
+                    .push(widget::text::body(fl!("settings")))
                     .align_y(Alignment::Center)
                     .spacing(4),
             )
@@ -436,8 +475,9 @@ impl App {
                     widget::column::with_capacity(4)
                         .push(
                             widget::settings::section()
-                                .title("History")                                .add(widget::settings::item(
-                                    "Max entries",
+                                .title(fl!("history-section"))
+                                .add(widget::settings::item(
+                                    fl!("max-entries"),
                                     widget::row::with_capacity(3)
                                         .push(step_button(
                                             "list-remove-symbolic",
@@ -455,7 +495,7 @@ impl App {
                                         .spacing(4),
                                 ))
                                 .add(widget::settings::item(
-                                    "Expire entries after",
+                                    fl!("expire-after"),
                                     widget::row::with_capacity(3)
                                         .push(step_button(
                                             "list-remove-symbolic",
@@ -472,9 +512,9 @@ impl App {
                         )
                         .push(
                             widget::settings::section()
-                                .title("Capture")
+                                .title(fl!("capture-section"))
                                 .add(widget::settings::item(
-                                    "Poll rate",
+                                    fl!("poll-rate"),
                                     widget::row::with_capacity(3)
                                         .push(step_button(
                                             "list-remove-symbolic",
@@ -489,17 +529,26 @@ impl App {
                                         .spacing(4),
                                 ))
                                 .add(widget::settings::item(
-                                    "Save images",
+                                    fl!("save-images"),
                                     widget::toggler(self.config.capture_images)
                                         .on_toggle(Message::ToggleImages),
+                                ))
+                                .add(widget::settings::item(
+                                    fl!("capture-primary"),
+                                    widget::toggler(self.config.capture_primary)
+                                        .on_toggle(Message::TogglePrimary),
                                 )),
                         )
                         .push(
                             widget::settings::section()
-                                .title("Privacy")
+                                .title(fl!("privacy-section"))
                                 .add(patterns),
                         )
-                        .push(widget::settings::section().title("Data").add(data))
+                        .push(
+                            widget::settings::section()
+                                .title(fl!("data-section"))
+                                .add(data),
+                        )
                         .spacing(8),
                 )
                 .height(Length::Fixed(430.0)),
@@ -516,9 +565,15 @@ impl App {
         };
         let task = match entry.kind {
             Kind::Text => {
-                let text = entry.text.clone();
-                self.last_set = Some(clipboard::hash_text(&text));
-                tokio::task::spawn_blocking(move || clipboard::set_clipboard(Clip::Text(text)))
+                let hash = clipboard::hash_text(&entry.text);
+                let clip = Clip::Text {
+                    text: entry.text.clone(),
+                    html: entry.html.clone(),
+                };
+                tokio::task::spawn_blocking(move || {
+                    clipboard::set_clipboard(&clip);
+                    Some(hash)
+                })
             }
             Kind::Image => {
                 let Some(path) = crate::history::image_path(
@@ -527,13 +582,17 @@ impl App {
                 ) else {
                     return Task::none();
                 };
-                self.last_set = None; // filled after read via Copied
-                tokio::task::spawn_blocking(move || {
-                    match std::fs::read(path) {
-                        Ok(bytes) => {
-                            clipboard::set_clipboard(Clip::Image(bytes));
-                        }
-                        Err(why) => eprintln!("clipit: cannot read image: {why}"),
+                tokio::task::spawn_blocking(move || match std::fs::read(path) {
+                    Ok(bytes) => {
+                        let hash = clipboard::hash_bytes(&bytes);
+                        let format =
+                            clipboard::sniff_format(&bytes).unwrap_or(clipboard::ImageFormat::Png);
+                        clipboard::set_clipboard(&Clip::Image { bytes, format });
+                        Some(hash)
+                    }
+                    Err(why) => {
+                        eprintln!("clipit: cannot read image: {why}");
+                        None
                     }
                 })
             }
@@ -544,8 +603,8 @@ impl App {
 
         let mut tasks = vec![Task::perform(
             async move {
-                let _ = task.await;
-                Message::Copied
+                let hash = task.await.ok().flatten();
+                Message::Copied(hash)
             },
             cosmic::Action::from,
         )];
@@ -649,6 +708,7 @@ impl Default for App {
             search_id: TextInputId::unique(),
             last_set: None,
             expanded: None,
+            expanded_html: false,
             selected: None,
             last_deleted: Vec::new(),
             show_settings: false,
@@ -722,8 +782,12 @@ impl cosmic::Application for App {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         let mut subs = vec![
-            clipboard::watch(self.config.poll_ms, self.config.capture_images)
-                .map(Message::ClipboardContent),
+            clipboard::watch(
+                self.config.poll_ms,
+                self.config.capture_images,
+                self.config.capture_primary,
+            )
+            .map(Message::ClipboardContent),
             self.core
                 .watch_config::<Config>(Self::APP_ID)
                 .map(|update| Message::Config(update.config)),
@@ -763,6 +827,7 @@ impl cosmic::Application for App {
                     self.popup.replace(new_id);
                     self.selected = None;
                     self.expanded = None;
+                    self.expanded_html = false;
                     self.search.clear();
                     let mut popup_settings = self.core.applet.get_popup_settings(
                         self.core.main_window_id().unwrap(),
@@ -799,23 +864,26 @@ impl cosmic::Application for App {
                 self.history.trim(self.config.history_size);
             }
             Message::ClipboardContent(content) => match content {
-                Clip::Text(text) => {
+                Clip::Text { text, html } => {
                     let hash = clipboard::hash_text(&text);
                     if self.last_set == Some(hash) {
-                        self.last_set = None;
                         return Task::none();
                     }
                     if text.trim().is_empty() {
                         return Task::none();
                     }
-                    if self.history.add_text(text, &self.config.ignore_patterns) {
+                    if self
+                        .history
+                        .add_text(text, html, &self.config.ignore_patterns)
+                    {
+                        self.last_set = None;
                         self.history.prune(self.config.expire_days);
                         self.history.trim(self.config.history_size);
                         self.history.save();
                     }
                 }
-                Clip::Image(bytes) => {
-                    if self.history.add_image(&bytes) {
+                Clip::Image { bytes, format } => {
+                    if self.history.add_image(&bytes, format.ext()) {
                         self.history.prune(self.config.expire_days);
                         self.history.trim(self.config.history_size);
                         self.history.save();
@@ -823,7 +891,11 @@ impl cosmic::Application for App {
                 }
             },
             Message::Copy(id) => return self.copy_entry(&id),
-            Message::Copied => {}
+            Message::Copied(hash) => {
+                if let Some(hash) = hash {
+                    self.last_set = Some(hash);
+                }
+            }
             Message::Delete(id) => {
                 if let Some(removed) = self.history.delete(&id) {
                     self.last_deleted.push(removed);
@@ -852,6 +924,14 @@ impl cosmic::Application for App {
                 } else {
                     Some(id)
                 };
+                self.expanded_html = false;
+            }
+            Message::ToggleHtmlView => {
+                self.expanded_html = !self.expanded_html;
+            }
+            Message::TogglePrimary(enabled) => {
+                self.config.capture_primary = enabled;
+                self.write_config();
             }
             Message::ClearHistory => {
                 self.history.clear();
@@ -963,7 +1043,7 @@ fn export_history(history: &History) -> String {
         .unwrap_or(0);
     let dir = base.join(format!("clipit-export-{ts}"));
     if let Err(why) = ensure_private_dir(&dir.join("images")) {
-        return format!("Export failed: {why}");
+        return fl!("export-failed", error = why.to_string());
     }
     let entries = history.display();
     for entry in &entries {
@@ -976,9 +1056,9 @@ fn export_history(history: &History) -> String {
     }
     match serde_json::to_string_pretty(&entries) {
         Ok(json) => match write_private(&dir.join("history.json"), json.as_bytes()) {
-            Ok(_) => format!("Exported to {}", dir.display()),
-            Err(why) => format!("Export failed: {why}"),
+            Ok(_) => fl!("exported-to", path = dir.display().to_string()),
+            Err(why) => fl!("export-failed", error = why.to_string()),
         },
-        Err(why) => format!("Export failed: {why}"),
+        Err(why) => fl!("export-failed", error = why.to_string()),
     }
 }

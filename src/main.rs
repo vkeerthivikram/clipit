@@ -1,8 +1,10 @@
 mod app;
 mod clipboard;
 mod history;
+mod i18n;
 
 fn main() -> cosmic::iced::Result {
+    i18n::localize();
     if std::env::args().any(|arg| arg == "--toggle") {
         toggle_popup();
         return Ok(());

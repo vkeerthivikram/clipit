@@ -28,6 +28,9 @@ pub struct Entry {
     #[serde(default)]
     pub id: String,
     pub text: String,
+    /// Plain-HTML alternative, when the source app offered text/html.
+    #[serde(default)]
+    pub html: Option<String>,
     /// File name (inside the clipit data dir) of the image payload.
     #[serde(default)]
     pub image: Option<String>,
@@ -101,8 +104,14 @@ impl History {
     }
 
     /// Add text as the newest entry, unless it matches an ignore pattern.
+    /// `html` is the optional text/html alternative from the same copy.
     /// Returns whether the entry was recorded.
-    pub fn add_text(&mut self, text: String, ignore: &[String]) -> bool {
+    pub fn add_text(
+        &mut self,
+        text: String,
+        html: Option<String>,
+        ignore: &[String],
+    ) -> bool {
         let lower = text.to_lowercase();
         if ignore
             .iter()
@@ -115,6 +124,7 @@ impl History {
         self.insert(Entry {
             id,
             text,
+            html,
             image: None,
             kind: Kind::Text,
             pinned: false,
@@ -123,15 +133,16 @@ impl History {
         true
     }
 
-    /// Add image bytes as the newest entry. Returns whether it was recorded.
-    pub fn add_image(&mut self, bytes: &[u8]) -> bool {
+    /// Add image bytes as the newest entry. `format` picks the payload file
+    /// extension. Returns whether it was recorded.
+    pub fn add_image(&mut self, bytes: &[u8], ext: &str) -> bool {
         let id = hash_hex(bytes);
         let dir = data_dir();
         if let Err(why) = ensure_private_dir(&dir.join("images")) {
             eprintln!("clipit: cannot create image dir: {why}");
             return false;
         }
-        let file = format!("{id}.png");
+        let file = format!("{id}.{ext}");
         let target = dir.join("images").join(&file);
         if !target.is_file()
             && let Err(why) = write_private(&target, bytes)
@@ -142,6 +153,7 @@ impl History {
         self.insert(Entry {
             id,
             text: String::new(),
+            html: None,
             image: Some(file),
             kind: Kind::Image,
             pinned: false,
@@ -332,9 +344,9 @@ mod tests {
     #[test]
     fn dedupe_moves_to_front_without_duplicates() {
         let mut h = History::default();
-        assert!(h.add_text("a".into(), &[]));
-        assert!(h.add_text("b".into(), &[]));
-        assert!(h.add_text("a".into(), &[]));
+        assert!(h.add_text("a".into(), None, &[]));
+        assert!(h.add_text("b".into(), None, &[]));
+        assert!(h.add_text("a".into(), None, &[]));
         let items = h.display();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].text, "a");
@@ -343,10 +355,10 @@ mod tests {
     #[test]
     fn re_copied_entry_keeps_pin_state() {
         let mut h = History::default();
-        h.add_text("a".into(), &[]);
+        h.add_text("a".into(), None, &[]);
         h.toggle_pin(&hash_hex(b"a"));
-        h.add_text("b".into(), &[]);
-        h.add_text("a".into(), &[]);
+        h.add_text("b".into(), None, &[]);
+        h.add_text("a".into(), None, &[]);
         let items = h.display();
         assert_eq!(items[0].text, "a");
         assert!(items[0].pinned);
@@ -355,8 +367,8 @@ mod tests {
     #[test]
     fn clear_keeps_pinned_only() {
         let mut h = History::default();
-        h.add_text("a".into(), &[]);
-        h.add_text("b".into(), &[]);
+        h.add_text("a".into(), None, &[]);
+        h.add_text("b".into(), None, &[]);
         h.toggle_pin(&hash_hex(b"b"));
         h.clear();
         assert_eq!(h.total(), 1);
@@ -366,10 +378,10 @@ mod tests {
     #[test]
     fn trim_respects_pins_and_max() {
         let mut h = History::default();
-        h.add_text("a".into(), &[]);
-        h.add_text("b".into(), &[]);
-        h.add_text("c".into(), &[]);
-        h.add_text("p".into(), &[]);
+        h.add_text("a".into(), None, &[]);
+        h.add_text("b".into(), None, &[]);
+        h.add_text("c".into(), None, &[]);
+        h.add_text("p".into(), None, &[]);
         h.toggle_pin(&hash_hex(b"p"));
         h.trim(2);
         assert_eq!(h.total(), 3);
@@ -382,17 +394,17 @@ mod tests {
     fn ignore_patterns_block_capture() {
         let mut h = History::default();
         let patterns = vec!["secret".to_string(), "Token:".to_string()];
-        assert!(!h.add_text("my secret data".into(), &patterns));
-        assert!(!h.add_text("Token: abc123".into(), &patterns));
-        assert!(h.add_text("harmless".into(), &patterns));
+        assert!(!h.add_text("my secret data".into(), None, &patterns));
+        assert!(!h.add_text("Token: abc123".into(), None, &patterns));
+        assert!(h.add_text("harmless".into(), None, &patterns));
         assert_eq!(h.total(), 1);
     }
 
     #[test]
     fn delete_returns_entry_and_undo_restores() {
         let mut h = History::default();
-        h.add_text("a".into(), &[]);
-        h.add_text("b".into(), &[]);
+        h.add_text("a".into(), None, &[]);
+        h.add_text("b".into(), None, &[]);
         let removed = h.delete(&hash_hex(b"b")).unwrap();
         assert_eq!(h.total(), 1);
         h.restore(removed);
@@ -402,12 +414,12 @@ mod tests {
     #[test]
     fn prune_drops_old_unpinned_keeps_pinned() {
         let mut h = History::default();
-        h.add_text("old".into(), &[]);
+        h.add_text("old".into(), None, &[]);
         h.entries[0].ts = 1;
-        h.add_text("pinned-old".into(), &[]);
+        h.add_text("pinned-old".into(), None, &[]);
         h.entries[0].ts = 1;
         h.toggle_pin(&hash_hex(b"pinned-old"));
-        h.add_text("fresh".into(), &[]);
+        h.add_text("fresh".into(), None, &[]);
         h.prune(1);
         let texts: Vec<String> = h.display().into_iter().map(|e| e.text).collect();
         assert!(texts.contains(&"fresh".to_string()));
@@ -435,5 +447,20 @@ mod tests {
         assert!(image_path(dir, Some("sub/abc.png")).is_none());
         assert!(image_path(dir, Some("..")).is_none());
         assert!(image_path(dir, Some("")).is_none());
+    }
+
+    #[test]
+    fn add_text_stores_html_alternative() {
+        let mut h = History::default();
+        assert!(h.add_text("body".into(), Some("<b>body</b>".into()), &[]));
+        assert_eq!(h.entries[0].html.as_deref(), Some("<b>body</b>"));
+    }
+
+    #[test]
+    fn entries_without_html_roundtrip_from_old_schema() {
+        let json = r#"{"entries":[{"id":"abc","text":"hi","image":null,"kind":"text","pinned":false,"ts":5}]}"#;
+        let history: History = serde_json::from_str(json).unwrap();
+        assert_eq!(history.entries[0].text, "hi");
+        assert!(history.entries[0].html.is_none());
     }
 }
