@@ -11,19 +11,32 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
     exit 1
 fi
+if ! command -v git >/dev/null 2>&1; then
+    echo "git is required (Cargo pulls libcosmic from GitHub)."
+    exit 1
+fi
 
-# System build dependencies: pkg-config + libxkbcommon dev files.
-if ! pkg-config --exists xkbcommon 2>/dev/null; then
-    echo "==> Installing libxkbcommon development files (sudo)"
+# System build dependencies: pkg-config, cmake, and headers for
+# xkbcommon / wayland / fontconfig / freetype / expat.
+if ! pkg-config --exists xkbcommon 2>/dev/null \
+    || ! pkg-config --exists fontconfig 2>/dev/null \
+    || ! pkg-config --exists freetype2 2>/dev/null; then
+    echo "==> Installing build dependencies (sudo)"
     if command -v apt-get >/dev/null 2>&1; then
         sudo apt-get update -y
-        sudo apt-get install -y pkg-config libxkbcommon-dev
+        sudo apt-get install -y pkg-config cmake \
+            libexpat1-dev libfontconfig-dev libfreetype-dev \
+            libxkbcommon-dev libwayland-dev
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y pkgconf-pkg-config libxkbcommon-devel
+        sudo dnf install -y pkgconf cmake \
+            expat-devel fontconfig-devel freetype-devel \
+            libxkbcommon-devel wayland-devel
     elif command -v pacman >/dev/null 2>&1; then
-        sudo pacman -S --needed pkgconf libxkbcommon
+        sudo pacman -S --needed pkgconf cmake \
+            expat fontconfig freetype2 libxkbcommon wayland
     else
-        echo "Please install: pkg-config + libxkbcommon development package"
+        echo "Please install: pkg-config, cmake, and dev packages for"
+        echo "libxkbcommon, wayland, fontconfig, freetype, expat"
         exit 1
     fi
 fi
