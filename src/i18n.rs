@@ -42,6 +42,9 @@ macro_rules! fl {
 
 #[cfg(test)]
 mod tests {
+    use super::{fluent_language_loader, DefaultLocalizer, FluentLanguageLoader, Localizations};
+    use i18n_embed::{LanguageLoader, Localizer};
+
     fn strip(s: String) -> String {
         s.replace(['\u{2068}', '\u{2069}'], "")
     }
@@ -64,5 +67,77 @@ mod tests {
         );
         assert_eq!(strip(crate::fl!("expire-days", days = 7)), "7 days");
         assert_eq!(strip(crate::fl!("expire-days", days = 1)), "1 day");
+    }
+
+    #[test]
+    fn all_locales_cover_every_message() {
+        let ids = |path: &std::path::Path| {
+            let content = std::fs::read_to_string(path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            let mut set = std::collections::BTreeSet::new();
+            for line in content.lines() {
+                if let Some((id, _)) = line.split_once('=') {
+                    let id = id.trim();
+                    if !id.is_empty() && id.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                    {
+                        set.insert(id.to_string());
+                    }
+                }
+            }
+            set
+        };
+        let base = std::path::Path::new("i18n");
+        let en = ids(&base.join("en").join("clipit.ftl"));
+        assert!(!en.is_empty());
+        let mut checked = 0;
+        for entry in std::fs::read_dir(base)
+            .expect("i18n dir must exist")
+            .flatten()
+        {
+            let path = entry.path().join("clipit.ftl");
+            if !path.is_file() {
+                continue;
+            }
+            let locale = entry.file_name();
+            if locale == "en" {
+                continue;
+            }
+            let ids = ids(&path);
+            let missing: Vec<_> = en.difference(&ids).collect();
+            let extra: Vec<_> = ids.difference(&en).collect();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "locale {}: missing {missing:?}, extra {extra:?}",
+                locale.to_string_lossy()
+            );
+            checked += 1;
+        }
+        assert!(checked >= 25, "expected 25+ locales, found {checked}");
+    }
+
+    #[test]
+    fn german_and_russian_bundles_parse_and_select() {
+        let loader: FluentLanguageLoader = fluent_language_loader!();
+        loader
+            .load_fallback_language(&Localizations)
+            .expect("fallback must load");
+        let localizer = DefaultLocalizer::new(&loader, &Localizations);
+
+        let de: unic_langid::LanguageIdentifier = "de".parse().unwrap();
+        localizer.select(&[de]).unwrap();
+        assert_eq!(i18n_embed_fl::fl!(loader, "clear"), "Leeren");
+
+        let ru: unic_langid::LanguageIdentifier = "ru".parse().unwrap();
+        localizer.select(&[ru]).unwrap();
+        let strip = |s: String| s.replace(['\u{2068}', '\u{2069}'], "");
+        assert_eq!(strip(i18n_embed_fl::fl!(loader, "clear")), "Очистить");
+        assert_eq!(
+            strip(i18n_embed_fl::fl!(loader, "expire-days", days = 2)),
+            "2 дня"
+        );
+        assert_eq!(
+            strip(i18n_embed_fl::fl!(loader, "expire-days", days = 5)),
+            "5 дней"
+        );
     }
 }

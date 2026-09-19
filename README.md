@@ -214,14 +214,16 @@ UI strings live in [i18n/en/clipit.ftl](i18n/en/clipit.ftl) using
 [Fluent](https://projectfluent.org/) syntax. Clipit picks the language from
 the desktop locale and falls back to English.
 
-To add a language, copy the file, keep the message IDs, translate the
-values, and put it in a new folder:
+Shipped locales: en, ar, cs, de, el, es, fr, he, hi, hu, id, it, ja, ko,
+nl, pl, pt-BR, ro, ru, sv, th, tr, uk, vi, zh-CN, zh-TW. Each covers every
+message, including CLDR plural rules (one/few/many and friends), and a
+test enforces that no locale drifts out of sync with the English set.
 
-```
-i18n/de/clipit.ftl    # German, for example
-```
-
-That is all. The build embeds every folder under `i18n/`.
+To add or fix a language, copy `i18n/en/clipit.ftl` into a new locale
+folder, keep the message IDs, translate the values. A build test fails on
+missing or extra message IDs, so nothing silently falls back. Note: the
+shipped translations were drafted with AI assistance; corrections from
+native speakers are welcome as ordinary pull requests.
 
 ## Limits
 
@@ -235,8 +237,8 @@ That is all. The build embeds every folder under `i18n/`.
   shipping a browser.
 - Animated GIFs render their first frame in the popup; full animation
   playback in the list is not implemented.
-- Translations ship as English only so far; the Fluent setup handles
-  plurals, so new locales just work.
+- Shipped translations are AI-drafted; they cover every message but have
+  not all been reviewed by native speakers.
 
 ## License
 
