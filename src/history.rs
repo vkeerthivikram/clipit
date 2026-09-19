@@ -45,6 +45,7 @@ pub struct History {
 
 impl History {
     pub fn load() -> Self {
+        harden_existing();
         let Ok(mut file) = std::fs::File::open(path()) else {
             return Self::default();
         };
@@ -77,15 +78,22 @@ impl History {
     pub fn save(&self) {
         let path = path();
         if let Some(dir) = path.parent()
-            && let Err(why) = std::fs::create_dir_all(dir)
+            && let Err(why) = ensure_private_dir(dir)
         {
             eprintln!("clipit: cannot create data dir: {why}");
             return;
         }
+        let tmp = path.with_extension("json.tmp");
         match serde_json::to_string(&self.entries) {
             Ok(json) => {
-                if let Err(why) = std::fs::write(path, json) {
+                if let Err(why) = write_private(&tmp, json.as_bytes()) {
                     eprintln!("clipit: cannot save history: {why}");
+                    let _ = std::fs::remove_file(&tmp);
+                    return;
+                }
+                if let Err(why) = std::fs::rename(&tmp, &path) {
+                    eprintln!("clipit: cannot save history: {why}");
+                    let _ = std::fs::remove_file(&tmp);
                 }
             }
             Err(why) => eprintln!("clipit: cannot serialize history: {why}"),
@@ -119,14 +127,14 @@ impl History {
     pub fn add_image(&mut self, bytes: &[u8]) -> bool {
         let id = hash_hex(bytes);
         let dir = data_dir();
-        if let Err(why) = std::fs::create_dir_all(dir.join("images")) {
+        if let Err(why) = ensure_private_dir(&dir.join("images")) {
             eprintln!("clipit: cannot create image dir: {why}");
             return false;
         }
         let file = format!("{id}.png");
         let target = dir.join("images").join(&file);
         if !target.is_file()
-            && let Err(why) = std::fs::write(&target, bytes)
+            && let Err(why) = write_private(&target, bytes)
         {
             eprintln!("clipit: cannot write image: {why}");
             return false;
@@ -229,7 +237,61 @@ fn path() -> PathBuf {
 }
 
 pub fn image_path(dir: &std::path::Path, file: Option<&str>) -> Option<PathBuf> {
-    file.map(|f| dir.join("images").join(f))
+    let file = file?;
+    if std::path::Path::new(file).file_name().and_then(|n| n.to_str()) != Some(file) {
+        return None;
+    }
+    Some(dir.join("images").join(file))
+}
+
+pub fn ensure_private_dir(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    let meta = std::fs::metadata(path)?;
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+pub fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)
+}
+
+fn tighten(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.permissions().mode() & 0o077 != 0 {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+}
+
+fn harden_existing() {
+    let dir = data_dir();
+    tighten(&dir, 0o700);
+    tighten(&path(), 0o600);
+    let images = dir.join("images");
+    if images.is_dir() {
+        tighten(&images, 0o700);
+        if let Ok(read) = std::fs::read_dir(&images) {
+            for entry in read.flatten() {
+                tighten(&entry.path(), 0o600);
+            }
+        }
+    }
 }
 
 pub fn hash_hex(bytes: &[u8]) -> String {
@@ -351,5 +413,27 @@ mod tests {
         assert!(texts.contains(&"fresh".to_string()));
         assert!(texts.contains(&"pinned-old".to_string()));
         assert!(!texts.contains(&"old".to_string()));
+    }
+
+    #[test]
+    fn write_private_sets_owner_only_perms() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("clipit-test-{}", std::process::id()));
+        let file = dir.join("probe.json");
+        ensure_private_dir(&dir).unwrap();
+        write_private(&file, b"{}").unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn image_path_rejects_traversal() {
+        let dir = std::path::Path::new("/tmp");
+        assert!(image_path(dir, Some("abc.png")).is_some());
+        assert!(image_path(dir, Some("../evil.png")).is_none());
+        assert!(image_path(dir, Some("sub/abc.png")).is_none());
+        assert!(image_path(dir, Some("..")).is_none());
+        assert!(image_path(dir, Some("")).is_none());
     }
 }

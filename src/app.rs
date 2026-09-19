@@ -12,7 +12,9 @@ use cosmic::widget::{self, icon, image, text_input};
 use cosmic::{theme, Element};
 
 use crate::clipboard::{self, Clip};
-use crate::history::{rel_time, Entry, History, Kind};
+use crate::history::{
+    ensure_private_dir, rel_time, write_private, Entry, History, Kind,
+};
 
 pub const APP_ID: &str = "dev.clipit.Clipit";
 
@@ -960,7 +962,7 @@ fn export_history(history: &History) -> String {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let dir = base.join(format!("clipit-export-{ts}"));
-    if let Err(why) = std::fs::create_dir_all(dir.join("images")) {
+    if let Err(why) = ensure_private_dir(&dir.join("images")) {
         return format!("Export failed: {why}");
     }
     let entries = history.display();
@@ -969,11 +971,11 @@ fn export_history(history: &History) -> String {
             && let Some(src) = crate::history::image_path(&crate::history::data_dir(), Some(file))
             && let Ok(bytes) = std::fs::read(src)
         {
-            let _ = std::fs::write(dir.join("images").join(file), bytes);
+            let _ = write_private(&dir.join("images").join(file), &bytes);
         }
     }
     match serde_json::to_string_pretty(&entries) {
-        Ok(json) => match std::fs::write(dir.join("history.json"), json) {
+        Ok(json) => match write_private(&dir.join("history.json"), json.as_bytes()) {
             Ok(_) => format!("Exported to {}", dir.display()),
             Err(why) => format!("Export failed: {why}"),
         },

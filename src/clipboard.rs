@@ -16,14 +16,18 @@ pub enum Clip {
     Image(Vec<u8>),
 }
 
+const PNG_MAGIC: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
 /// Reads text, or (when enabled) a PNG image, from the regular clipboard.
 fn read_clipboard(capture_images: bool) -> Option<Clip> {
+    use std::io::Read as _;
     use wl_clipboard_rs::paste::{get_contents, ClipboardType, Error, MimeType, Seat};
 
     match get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Text) {
-        Ok((mut pipe, _)) => {
+        Ok((pipe, _)) => {
             let mut buf = Vec::new();
-            match std::io::Read::read_to_end(&mut pipe, &mut buf) {
+            let limit = (crate::history::MAX_ENTRY_BYTES + 1) as u64;
+            match pipe.take(limit).read_to_end(&mut buf) {
                 Ok(_) => {}
                 Err(why) => {
                     eprintln!("clipit: clipboard read error: {why}");
@@ -36,19 +40,20 @@ fn read_clipboard(capture_images: bool) -> Option<Clip> {
             String::from_utf8(buf).ok().map(Clip::Text)
         }
         Err(Error::NoMimeType) if capture_images => {
-            let (mut pipe, _) = get_contents(
+            let (pipe, _) = get_contents(
                 ClipboardType::Regular,
                 Seat::Unspecified,
                 MimeType::Specific("image/png"),
             )
             .ok()?;
             let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut pipe, &mut buf).ok()?;
+            let limit = (crate::history::MAX_IMAGE_BYTES + 1) as u64;
+            pipe.take(limit).read_to_end(&mut buf).ok()?;
             if buf.is_empty() || buf.len() > crate::history::MAX_IMAGE_BYTES {
                 return None;
             }
             // Cheap PNG signature check so random binary offers are skipped.
-            if buf.starts_with(&[0x89, b'P', b'N', b'G']) {
+            if buf.starts_with(&PNG_MAGIC) {
                 Some(Clip::Image(buf))
             } else {
                 None
